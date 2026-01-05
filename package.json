@@ -1,0 +1,17 @@
+{
+  "name": "mi-runjs-clone",
+  "version": "1.0.0",
+  "description": "Un clon de RunJS hecho con React y Monaco",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "author": "Tu Nombre",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^39.2.7",
+    "electron-builder": "^24.9.0"
+  }
+}
