@@ -1,10 +1,21 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
+require('electron-reload')(__dirname, {
+  electron: path.join(__dirname, 'node_modules', '.bin', 'electron')
+});
 
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    title: "F5js",
+    icon: path.join(__dirname, 'icon.ico'),
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#252526',
+      symbolColor: '#ffffff',
+      height: 56
+    },
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

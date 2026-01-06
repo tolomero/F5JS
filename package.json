@@ -1,17 +1,34 @@
 {
-  "name": "mi-runjs-clone",
+  "name": "f5js-app",
+  "productName": "F5js",
   "version": "1.0.0",
-  "description": "Un clon de RunJS hecho con React y Monaco",
+  "description": "Un clon de RunJS llamado F5js",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "electron . --no-deprecation",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.tolo.f5js",
+    "productName": "F5js",
+    "win": {
+      "icon": "icon.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "F5js"
+    }
   },
   "author": "Tu Nombre",
   "license": "MIT",
   "devDependencies": {
     "electron": "^39.2.7",
     "electron-builder": "^24.9.0"
+  },
+  "dependencies": {
+    "electron-reload": "^2.0.0-alpha.1"
   }
 }

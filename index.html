@@ -3,17 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JS/TS Playground - Estilo RunJS</title>
+    <title>F5js - JavaScript Playground</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
-    <!-- Cambiamos el orden y la forma de carga -->
     <script>
-        // Truco definitivo para Electron: ocultamos el 'require' de Node temporalmente
-        // para que Monaco no se confunda e intente cargar archivos locales.
+        // Fix para Electron y Monaco
         window.nodeRequire = window.require;
         window.require = undefined;
     </script>
@@ -22,22 +20,81 @@
     <style>
         body, html, #root { 
             margin: 0; padding: 0; height: 100vh; width: 100vw; 
-            background-color: #1e1e1e; color: #fff; overflow: hidden;
+            background-color: #252526; color: #fff; overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
         
         #editor-container {
             width: 100%;
             height: 100%;
-            position: relative;
-            z-index: 10;
         }
 
-        .inline-log-decoration {
-            opacity: 0.6;
-            font-style: italic;
-            color: #4ec9b0;
+        /* Scrollbar minimalista */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #252526; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #444; }
+
+        .monaco-editor .line-numbers { color: #6e7681 !important; }
+
+        /* Panel de resultados */
+        .results-panel {
+            font-family: 'Fira Code', Consolas, 'Courier New', monospace;
+            font-size: 16px;
+            line-height: 24px;
+            padding-top: 20px;
+            overflow: auto !important; /* Permitir scroll horizontal y vertical */
+        }
+
+        .result-line {
+            height: 24px;
+            display: flex;
+            align-items: center;
             padding-left: 20px;
-            pointer-events: none;
+            padding-right: 20px;
+            white-space: pre; /* No romper línea para mantener sincronía */
+            width: max-content; /* Crecer horizontalmente según el texto */
+            min-width: 100%;
+        }
+
+        .result-value,
+        .result-string,
+        .result-number,
+        .result-boolean,
+        .result-array,
+        .result-object {
+            color: #26e0bd !important;
+            font-style: italic;
+        }
+
+        .result-error {
+            color: #f87171 !important;
+            font-style: italic;
+        }
+
+        .result-warn {
+            color: #fbbf24 !important;
+            font-style: italic;
+        }
+
+        .result-null {
+            color: #6b7280 !important;
+            font-style: italic;
+        }
+
+        /* Divisor vertical */
+        .divider {
+            width: 1px;
+            background: #333;
+            cursor: col-resize;
+        }
+
+        #editor-container, .results-panel, main {
+            background-color: #252526 !important;
+        }
+
+        .monaco-editor, .monaco-editor .margin, .monaco-editor-background {
+            background-color: #252526 !important;
         }
     </style>
 </head>
@@ -47,132 +104,331 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
+        // Formateador avanzado con types
         const formatValue = (v) => {
-            try {
-                if (v === null) return 'null';
-                if (v === undefined) return 'undefined';
-                if (typeof v === 'object') return JSON.stringify(v);
-                return String(v);
-            } catch(e) { return '[Object]'; }
+            if (v === null) return { text: 'null', type: 'null' };
+            if (v === undefined) return { text: 'undefined', type: 'null' };
+            if (typeof v === 'string') return { text: `'${v}'`, type: 'string' };
+            if (typeof v === 'number') return { text: String(v), type: 'number' };
+            if (typeof v === 'boolean') return { text: String(v), type: 'boolean' };
+            if (Array.isArray(v)) {
+                const items = v.map(item => formatValue(item).text).join(', ');
+                return { text: `[ ${items} ]`, type: 'array' };
+            }
+            if (typeof v === 'object') {
+                try {
+                    const entries = Object.entries(v).slice(0, 5);
+                    const parts = entries.map(([k, val]) => `${k}: ${formatValue(val).text}`);
+                    const suffix = Object.keys(v).length > 5 ? ', ...' : '';
+                    return { text: `{ ${parts.join(', ')}${suffix} }`, type: 'object' };
+                } catch {
+                    return { text: '[Object]', type: 'object' };
+                }
+            }
+            if (typeof v === 'function') return { text: '[Function]', type: 'null' };
+            return { text: String(v), type: 'value' };
+        };
+
+        const formatArgs = (args) => {
+            return args.map(a => formatValue(a).text).join(' ');
         };
 
         const App = () => {
-            const [code, setCode] = useState("const x = 10;\nconsole.log(x);");
-            const [logs, setLogs] = useState([]);
+            const defaultCode = 
+`const mensaje = "Hola Mundo";
+console.log(mensaje);
+
+// Funciones
+const suma = (a, b) => a + b;
+console.log(suma(5, 10));
+
+// Arrays
+const numeros = [1, 2, 3, 4, 5];
+console.log(numeros.map(n => n * 2));
+
+// Objetos
+const usuario = { nombre: "Ana", edad: 28 };
+console.log(usuario);
+
+// Expresiones directas
+42 * 2;
+"texto".toUpperCase();
+Math.PI;`;
+
+            const [code, setCode] = useState(defaultCode);
+            const [results, setResults] = useState({}); // { lineNumber: { value, type } }
             const [isReady, setIsReady] = useState(false);
+            
             const editorRef = useRef(null);
             const monacoRef = useRef(null);
-            const decorationsRef = useRef([]);
+            const resultsPanelRef = useRef(null);
 
             useEffect(() => {
-                // Configuramos el cargador de Monaco (que ahora es el único 'require' disponible)
                 window.require.config({
                     paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }
                 });
 
-                // Cargamos el editor
                 window.require(['vs/editor/editor.main'], function() {
                     monacoRef.current = monaco;
                     
-                    const container = document.getElementById('editor-container');
-                    if (!container) return;
+                    monaco.editor.defineTheme('f5js-theme', {
+                        base: 'vs-dark',
+                        inherit: true,
+                        rules: [],
+                        colors: {
+                            'editor.background': '#252526',
+                            'editorGutter.background': '#252526',
+                            'editor.lineHighlightBackground': '#2c2c2d',
+                        }
+                    });
 
-                    editorRef.current = monaco.editor.create(container, {
+                    editorRef.current = monaco.editor.create(document.getElementById('editor-container'), {
                         value: code,
                         language: 'javascript',
-                        theme: 'vs-dark',
+                        theme: 'f5js-theme',
                         automaticLayout: true,
-                        fontSize: 15,
+                        fontSize: 16,
+                        fontFamily: "'Fira Code', Consolas, monospace",
                         minimap: { enabled: false },
                         scrollBeyondLastLine: false,
                         lineNumbers: "on",
+                        glyphMargin: false,
+                        folding: false,
+                        lineDecorationsWidth: 10,
+                        lineNumbersMinChars: 3,
                         readOnly: false,
-                        domReadOnly: false,
-                        fixedOverflowWidgets: true
+                        fixedOverflowWidgets: true,
+                        padding: { top: 20 },
+                        lineHeight: 24
                     });
 
-                    // Devolvemos el require de Node a la normalidad si es necesario para otros procesos
-                    if (window.nodeRequire) {
-                        window.require = window.nodeRequire;
-                    }
-
-                    setTimeout(() => {
-                        editorRef.current.focus();
-                    }, 500);
-
-                    setIsReady(true);
+                    if (window.nodeRequire) window.require = window.nodeRequire;
 
                     editorRef.current.onDidChangeModelContent(() => {
                         setCode(editorRef.current.getValue());
                     });
+
+                    // Sincronizar scroll
+                    editorRef.current.onDidScrollChange((e) => {
+                        if (resultsPanelRef.current) {
+                            resultsPanelRef.current.scrollTop = e.scrollTop;
+                        }
+                    });
+
+                    setTimeout(() => editorRef.current.focus(), 500);
+                    setIsReady(true);
                 });
 
                 return () => editorRef.current?.dispose();
             }, []);
 
             const runCode = useCallback(() => {
-                const currentLogs = [];
-                try {
-                    const js = Babel.transform(code, { presets: ['env'] }).code;
-                    const mockConsole = {
-                        log: (...args) => currentLogs.push(args.map(formatValue).join(' '))
-                    };
-                    new Function('console', js)(mockConsole);
-                } catch (e) {
-                    currentLogs.push("Error: " + e.message);
-                }
-                setLogs(currentLogs);
-
-                if (editorRef.current && monacoRef.current) {
-                    const model = editorRef.current.getModel();
-                    const lineCount = model.getLineCount();
-                    const decs = [];
-                    
-                    let logIdx = 0;
-                    for(let i = 1; i <= lineCount; i++) {
-                        if(model.getLineContent(i).includes('console.log') && currentLogs[logIdx]) {
-                            decs.push({
-                                range: new monacoRef.current.Range(i, 1, i, 1),
-                                options: { 
-                                    isWholeLine: false,
-                                    after: { 
-                                        content: `  // ${currentLogs[logIdx]}`, 
-                                        inlineClassName: 'inline-log-decoration' 
-                                    } 
-                                }
-                            });
-                            logIdx++;
-                        }
+                const lineResults = {};
+                const lines = code.split('\n');
+                
+                // Crear un mapa de qué líneas tienen console.log
+                const consoleLogLines = [];
+                lines.forEach((line, idx) => {
+                    if (line.includes('console.log')) {
+                        consoleLogLines.push(idx + 1);
                     }
-                    decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, decs);
+                });
+
+                try {
+                    // Transformar el código para capturar console.log con número de línea
+                    let logIndex = 0;
+                    const capturedLogs = [];
+                    
+                    const mockConsole = {
+                        log: (...args) => {
+                            if (logIndex < consoleLogLines.length) {
+                                const lineNum = consoleLogLines[logIndex];
+                                capturedLogs.push({ line: lineNum, args, type: 'log' });
+                                logIndex++;
+                            }
+                        },
+                        warn: (...args) => {
+                            if (logIndex < consoleLogLines.length) {
+                                const lineNum = consoleLogLines[logIndex];
+                                capturedLogs.push({ line: lineNum, args, type: 'warn' });
+                                logIndex++;
+                            }
+                        },
+                        error: (...args) => {
+                            if (logIndex < consoleLogLines.length) {
+                                const lineNum = consoleLogLines[logIndex];
+                                capturedLogs.push({ line: lineNum, args, type: 'error' });
+                                logIndex++;
+                            }
+                        }
+                    };
+
+                    // Transformar código con Babel
+                    const transformed = Babel.transform(code, { presets: ['env'] }).code;
+                    
+                    // Ejecutar
+                    const execute = new Function('console', transformed);
+                    execute(mockConsole);
+
+                    // Procesar resultados
+                    capturedLogs.forEach(log => {
+                        const formatted = formatArgs(log.args);
+                        lineResults[log.line] = { 
+                            value: formatted, 
+                            type: log.type,
+                            rawType: log.args.length === 1 ? typeof log.args[0] : 'mixed'
+                        };
+                    });
+
+                    // También evaluar expresiones que no son console.log
+                    lines.forEach((line, idx) => {
+                        const trimmed = line.trim();
+                        const lineNum = idx + 1;
+                        
+                        // Saltar líneas vacías, comentarios, y console.log
+                        if (!trimmed || 
+                            trimmed.startsWith('//') || 
+                            trimmed.startsWith('/*') ||
+                            trimmed.includes('console.') ||
+                            trimmed.startsWith('const ') ||
+                            trimmed.startsWith('let ') ||
+                            trimmed.startsWith('var ') ||
+                            trimmed.startsWith('function ') ||
+                            trimmed.startsWith('if ') ||
+                            trimmed.startsWith('for ') ||
+                            trimmed.startsWith('while ') ||
+                            trimmed.startsWith('return ') ||
+                            trimmed.startsWith('import ') ||
+                            trimmed.startsWith('export ') ||
+                            trimmed === '{' ||
+                            trimmed === '}' ||
+                            trimmed === '};' ||
+                            trimmed.endsWith('{') ||
+                            trimmed.startsWith('}')) {
+                            return;
+                        }
+
+                        // Intentar evaluar expresiones simples
+                        try {
+                            // Solo evaluar si parece una expresión simple
+                            if (trimmed.endsWith(';')) {
+                                const expr = trimmed.slice(0, -1);
+                                if (expr && !expr.includes('=')) {
+                                    const result = eval(expr);
+                                    if (result !== undefined) {
+                                        const formatted = formatValue(result);
+                                        lineResults[lineNum] = {
+                                            value: formatted.text,
+                                            type: 'expression',
+                                            rawType: formatted.type
+                                        };
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            // Ignorar errores de evaluación de expresiones
+                        }
+                    });
+
+                } catch (e) {
+                    // Encontrar la línea del error si es posible
+                    const errorLine = e.loc?.line || 1;
+                    lineResults[errorLine] = { 
+                        value: `Error: ${e.message}`, 
+                        type: 'error',
+                        rawType: 'error'
+                    };
                 }
+
+                setResults(lineResults);
             }, [code]);
 
+            // Ejecutar código con debounce
             useEffect(() => {
-                const t = setTimeout(runCode, 500);
+                const t = setTimeout(runCode, 400);
                 return () => clearTimeout(t);
             }, [code, runCode]);
 
+            // Renderizar el panel de resultados
+            const renderResults = () => {
+                const lines = code.split('\n');
+                return lines.map((_, idx) => {
+                    const lineNum = idx + 1;
+                    const result = results[lineNum];
+                    
+                    if (!result) {
+                        return <div key={lineNum} className="result-line"></div>;
+                    }
+
+                    // Solo errores y warnings tienen colores diferentes
+                    let className = 'result-value';
+                    if (result.type === 'error') className = 'result-error';
+                    else if (result.type === 'warn') className = 'result-warn';
+                    else if (result.rawType === 'null') className = 'result-null';
+
+                    return (
+                        <div key={lineNum} className="result-line">
+                            <span className={className}>{result.value}</span>
+                        </div>
+                    );
+                });
+            };
+
             return (
-                <div className="flex flex-col h-full w-full bg-[#1e1e1e]">
-                    <div className="h-10 bg-[#252526] flex items-center px-4 justify-between border-b border-[#333]">
+                <div className="flex flex-col h-full w-full bg-[#252526]">
+                    <header className="h-14 bg-[#252526] border-b border-[#333] flex items-center justify-between px-6 z-20" style={{ WebkitAppRegion: 'drag' }}>
+                        <div className="flex items-center gap-4" style={{ WebkitAppRegion: 'no-drag' }}>
+                            <div className="bg-[url('icon.ico')] bg-cover w-8 h-8 rounded-md shadow-lg">
+                            </div>
+                            <div className="flex flex-col">
+                                <h1 className="text-sm font-bold text-gray-100 leading-tight">F5js</h1>
+                                <span className="text-[9px] text-gray-500 font-mono uppercase font-bold tracking-widest">Premium Editor</span>
+                            </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-6 pr-[140px]" style={{ WebkitAppRegion: 'no-drag' }}>
+                            <span className={`text-[10px] ${isReady ? 'text-teal-400' : 'text-yellow-500'} font-bold uppercase tracking-wider`}>
+                                {isReady ? '● System Ready' : '○ Loading...'}
+                            </span>
+                            <button 
+                                onClick={runCode}
+                                className="bg-gradient-to-t from-sky-500 to-indigo-500 hover:from-sky-600 hover:to-indigo-600 text-white text-[11px] px-6 py-2 rounded font-bold transition-all active:scale-95 flex items-center gap-2"
+                            >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                                EJECUTAR
+                            </button>
+                        </div>
+                    </header>
+
+                    <main className="flex-1 flex overflow-hidden bg-[#252526]">
+                        {/* Editor Panel */}
+                        <div className="flex-1 min-w-0 bg-[#252526]" style={{ flex: '0 0 60%' }}>
+                            <div id="editor-container" className="h-full bg-[#252526]"></div>
+                        </div>
+                        
+                        {/* Divider */}
+                        <div className="divider"></div>
+                        
+                        {/* Results Panel */}
+                        <div 
+                            ref={resultsPanelRef}
+                            className="results-panel bg-[#252526]"
+                            style={{ flex: '0 0 40%' }}
+                        >
+                            {renderResults()}
+                        </div>
+                    </main>
+                    
+                    <footer className="h-7 bg-gradient-to-t from-sky-500 to-indigo-500 hover:from-sky-600 hover:to-indigo-600 flex items-center px-4 justify-between text-[11px] text-white font-semibold">
+                        <div className="flex gap-4">
+                            <span>Líneas: {code.split('\n').length}</span>
+                            <span className="opacity-70">JavaScript ES6+</span>
+                        </div>
                         <div className="flex items-center gap-2">
-                            <div className="w-5 h-5 bg-yellow-500 rounded text-black font-bold text-[10px] flex items-center justify-center">JS</div>
-                            <span className="text-xs font-medium text-gray-300">RunJS Clone - {isReady ? 'Listo' : 'Cargando Editor...'}</span>
+                            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
+                            <span>Live Sync</span>
                         </div>
-                    </div>
-                    <div className="flex flex-1 overflow-hidden">
-                        <div className="w-1/2 h-full" onClick={() => editorRef.current?.focus()}>
-                            <div id="editor-container"></div>
-                        </div>
-                        <div className="w-1/2 h-full bg-[#1e1e1e] border-l border-[#333] p-4 font-mono text-sm overflow-auto">
-                            {logs.map((l, i) => (
-                                <div key={i} className="text-gray-400 mb-1 border-b border-[#2a2a2a] pb-1">
-                                    <span className="text-blue-500 mr-2 opacity-50">›</span> {l}
-                                </div>
-                            ))}
-                        </div>
-                    </div>
+                    </footer>
                 </div>
             );
         };
