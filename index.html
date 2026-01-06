@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>F5js - JavaScript Playground</title>
-    
+    <link rel="icon" type="image/x-icon" href="icon.ico">
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -155,9 +156,17 @@ console.log(usuario);
 "texto".toUpperCase();
 Math.PI;`;
 
-            const [code, setCode] = useState(defaultCode);
+            const [code, setCode] = useState(() => {
+                const saved = localStorage.getItem('f5js_code');
+                return saved || defaultCode;
+            });
             const [results, setResults] = useState({}); // { lineNumber: { value, type } }
             const [isReady, setIsReady] = useState(false);
+
+            // Guardar código automáticamente
+            useEffect(() => {
+                localStorage.setItem('f5js_code', code);
+            }, [code]);
             
             const editorRef = useRef(null);
             const monacoRef = useRef(null);
@@ -174,21 +183,44 @@ Math.PI;`;
                     monaco.editor.defineTheme('f5js-theme', {
                         base: 'vs-dark',
                         inherit: true,
-                        rules: [],
+                        rules: [
+                            { token: 'keyword', foreground: 'A855F7' }, // Violeta Premium
+                            { token: 'operator', foreground: 'A855F7' }, // Igualdades y operadores
+                            { token: 'identifier', foreground: '0ea5e9' }, // Variables en Sky Blue
+                            { token: 'type.identifier', foreground: '26e0bd' }, // Math, JSON, etc.
+                            { token: 'string', foreground: 'C084FC' }, 
+                            { token: 'number', foreground: 'C084FC' },
+                            { token: 'comment', foreground: '64748b' },
+                            { token: 'delimiter', foreground: 'A855F7' },
+                            
+                            // Reglas específicas para console.log y miembros
+                            { token: 'variable.predefined', foreground: '26e0bd' }, // console, window, etc (TS)
+                            { token: 'predefined', foreground: '26e0bd' },
+                            { token: 'support.variable', foreground: '26e0bd' },
+                            { token: 'support.function', foreground: 'fdf4ff' }, // log, warn, error
+                            { token: 'member', foreground: 'fdf4ff' }, // Propiedades y métodos (TS)
+                            { token: 'identifier.method', foreground: 'fdf4ff' },
+                            { token: 'identifier.function', foreground: 'fdf4ff' },
+                            { token: 'meta.function-call', foreground: 'fdf4ff' },
+                            { token: 'entity.name.function', foreground: 'fdf4ff' },
+                        ],
                         colors: {
                             'editor.background': '#252526',
                             'editorGutter.background': '#252526',
                             'editor.lineHighlightBackground': '#2c2c2d',
+                            'editorCursor.foreground': '#26e0bd',
                         }
                     });
 
                     editorRef.current = monaco.editor.create(document.getElementById('editor-container'), {
                         value: code,
-                        language: 'javascript',
+                        language: 'typescript', // Cambiamos a typescript para mejores tokens
                         theme: 'f5js-theme',
                         automaticLayout: true,
                         fontSize: 16,
-                        fontFamily: "'Fira Code', Consolas, monospace",
+                        lineHeight: 24,
+                        fontFamily: "'Fira Code', monospace",
+                        fontLigatures: true,
                         minimap: { enabled: false },
                         scrollBeyondLastLine: false,
                         lineNumbers: "on",
@@ -198,8 +230,7 @@ Math.PI;`;
                         lineNumbersMinChars: 3,
                         readOnly: false,
                         fixedOverflowWidgets: true,
-                        padding: { top: 20 },
-                        lineHeight: 24
+                        padding: { top: 20 }
                     });
 
                     if (window.nodeRequire) window.require = window.nodeRequire;
@@ -266,11 +297,45 @@ Math.PI;`;
                     // Transformar código con Babel
                     const transformed = Babel.transform(code, { presets: ['env'] }).code;
                     
-                    // Ejecutar
+                    // Sistema de evaluación por líneas
+                    const runner = {
+                        results: {},
+                        log: (line, value) => {
+                            const formatted = formatValue(value);
+                            runner.results[line] = { 
+                                value: formatted.text, 
+                                type: 'log', 
+                                rawType: formatted.type 
+                            };
+                        }
+                    };
+
+                    // Ejecutar código completo para definir funciones y variables
                     const execute = new Function('console', transformed);
                     execute(mockConsole);
 
-                    // Procesar resultados
+                    // Re-evaluar líneas para capturar resultados de expresiones
+                    lines.forEach((line, idx) => {
+                        const trimmed = line.trim();
+                        const lineNum = idx + 1;
+                        if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.includes('console.log')) return;
+
+                        try {
+                            // Intentar ejecutar la línea en el contexto actual
+                            // NOTA: Usamos un truco para obtener el valor de la expresión
+                            const result = eval(code.split('\n').slice(0, lineNum).join('\n'));
+                            if (result !== undefined && !lineResults[lineNum]) {
+                                const formatted = formatValue(result);
+                                lineResults[lineNum] = {
+                                    value: formatted.text,
+                                    type: 'expression',
+                                    rawType: formatted.type
+                                };
+                            }
+                        } catch (e) {}
+                    });
+
+                    // Fusionar logs de console
                     capturedLogs.forEach(log => {
                         const formatted = formatArgs(log.args);
                         lineResults[log.line] = { 
@@ -278,56 +343,6 @@ Math.PI;`;
                             type: log.type,
                             rawType: log.args.length === 1 ? typeof log.args[0] : 'mixed'
                         };
-                    });
-
-                    // También evaluar expresiones que no son console.log
-                    lines.forEach((line, idx) => {
-                        const trimmed = line.trim();
-                        const lineNum = idx + 1;
-                        
-                        // Saltar líneas vacías, comentarios, y console.log
-                        if (!trimmed || 
-                            trimmed.startsWith('//') || 
-                            trimmed.startsWith('/*') ||
-                            trimmed.includes('console.') ||
-                            trimmed.startsWith('const ') ||
-                            trimmed.startsWith('let ') ||
-                            trimmed.startsWith('var ') ||
-                            trimmed.startsWith('function ') ||
-                            trimmed.startsWith('if ') ||
-                            trimmed.startsWith('for ') ||
-                            trimmed.startsWith('while ') ||
-                            trimmed.startsWith('return ') ||
-                            trimmed.startsWith('import ') ||
-                            trimmed.startsWith('export ') ||
-                            trimmed === '{' ||
-                            trimmed === '}' ||
-                            trimmed === '};' ||
-                            trimmed.endsWith('{') ||
-                            trimmed.startsWith('}')) {
-                            return;
-                        }
-
-                        // Intentar evaluar expresiones simples
-                        try {
-                            // Solo evaluar si parece una expresión simple
-                            if (trimmed.endsWith(';')) {
-                                const expr = trimmed.slice(0, -1);
-                                if (expr && !expr.includes('=')) {
-                                    const result = eval(expr);
-                                    if (result !== undefined) {
-                                        const formatted = formatValue(result);
-                                        lineResults[lineNum] = {
-                                            value: formatted.text,
-                                            type: 'expression',
-                                            rawType: formatted.type
-                                        };
-                                    }
-                                }
-                            }
-                        } catch (e) {
-                            // Ignorar errores de evaluación de expresiones
-                        }
                     });
 
                 } catch (e) {
