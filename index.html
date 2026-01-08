@@ -38,24 +38,29 @@
 
         .monaco-editor .line-numbers { color: #6e7681 !important; }
 
-        /* Panel de resultados */
+        /* Panel de resultados optimizado */
         .results-panel {
             font-family: 'Fira Code', Consolas, 'Courier New', monospace;
             font-size: 16px;
             line-height: 24px;
             padding-top: 20px;
-            overflow: auto !important; /* Permitir scroll horizontal y vertical */
+            overflow-y: scroll !important; /* Forzar scroll vertical independiente */
+            overflow-x: auto !important;
         }
 
         .result-line {
-            height: 24px;
+            min-height: 24px;
             display: flex;
-            align-items: center;
+            flex-direction: column;
+            justify-content: flex-start;
             padding-left: 20px;
             padding-right: 20px;
-            white-space: pre; /* No romper línea para mantener sincronía */
-            width: max-content; /* Crecer horizontalmente según el texto */
-            min-width: 100%;
+            white-space: pre-wrap;
+            word-break: break-all;
+            width: 100%;
+            box-sizing: border-box;
+            background-color: #252526;
+            margin-bottom: 0px;
         }
 
         .result-value,
@@ -111,6 +116,7 @@
             if (v === undefined) return { text: 'undefined', type: 'null' };
             if (typeof v === 'string') return { text: `'${v}'`, type: 'string' };
             if (typeof v === 'number') return { text: String(v), type: 'number' };
+            if (typeof v === 'bigint') return { text: String(v) + 'n', type: 'number' };
             if (typeof v === 'boolean') return { text: String(v), type: 'boolean' };
             if (Array.isArray(v)) {
                 const items = v.map(item => formatValue(item).text).join(', ');
@@ -253,6 +259,12 @@ Math.PI;`;
                 return () => editorRef.current?.dispose();
             }, []);
 
+            // Limpiamos la lógica de ViewZones que causaba espacios en blanco
+            useEffect(() => {
+                if (!editorRef.current || !isReady) return;
+                // Eliminado el sistema de ViewZones para evitar deformar el código
+            }, [results, isReady, code]);
+
             const runCode = useCallback(() => {
                 const lineResults = {};
                 const lines = code.split('\n');
@@ -266,65 +278,57 @@ Math.PI;`;
                 });
 
                 try {
-                    // Transformar el código para capturar console.log con número de línea
-                    let logIndex = 0;
                     const capturedLogs = [];
-                    
                     const mockConsole = {
-                        log: (...args) => {
-                            if (logIndex < consoleLogLines.length) {
-                                const lineNum = consoleLogLines[logIndex];
-                                capturedLogs.push({ line: lineNum, args, type: 'log' });
-                                logIndex++;
-                            }
+                        log: (lineNum, ...args) => {
+                            capturedLogs.push({ line: lineNum, args, type: 'log' });
                         },
-                        warn: (...args) => {
-                            if (logIndex < consoleLogLines.length) {
-                                const lineNum = consoleLogLines[logIndex];
-                                capturedLogs.push({ line: lineNum, args, type: 'warn' });
-                                logIndex++;
-                            }
+                        warn: (lineNum, ...args) => {
+                            capturedLogs.push({ line: lineNum, args, type: 'warn' });
                         },
-                        error: (...args) => {
-                            if (logIndex < consoleLogLines.length) {
-                                const lineNum = consoleLogLines[logIndex];
-                                capturedLogs.push({ line: lineNum, args, type: 'error' });
-                                logIndex++;
-                            }
+                        error: (lineNum, ...args) => {
+                            capturedLogs.push({ line: lineNum, args, type: 'error' });
                         }
                     };
+
+                    // Instrumentar código para inyectar número de línea en console.log
+                    const linesWithCapture = lines.map((line, idx) => {
+                        // Regex mejorada para no capturar console.log dentro de strings o comentarios
+                        return line.replace(/(?<!['"`/])console\.(log|warn|error)\(/g, `console.$1(${idx + 1}, `);
+                    });
+                    const instrumentedCode = linesWithCapture.join('\n');
 
                     // Transformar código con Babel
-                    const transformed = Babel.transform(code, { presets: ['env'] }).code;
+                    const transformed = Babel.transform(instrumentedCode, { presets: ['env'] }).code;
                     
-                    // Sistema de evaluación por líneas
-                    const runner = {
-                        results: {},
-                        log: (line, value) => {
-                            const formatted = formatValue(value);
-                            runner.results[line] = { 
-                                value: formatted.text, 
-                                type: 'log', 
-                                rawType: formatted.type 
-                            };
-                        }
-                    };
-
                     // Ejecutar código completo para definir funciones y variables
                     const execute = new Function('console', transformed);
                     execute(mockConsole);
 
                     // Re-evaluar líneas para capturar resultados de expresiones
+                    let lastCompletionValue = undefined;
                     lines.forEach((line, idx) => {
                         const trimmed = line.trim();
                         const lineNum = idx + 1;
-                        if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.includes('console.log')) return;
+                        
+                        // Omitir líneas vacías, comentarios y logs (ya procesados)
+                        if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.includes('console.log')) {
+                            return;
+                        }
+
+                        // Lista de prefijos que indican estructuras o declaraciones que no deben emitir resultados automáticos
+                        const isStructure = /^(function|async|class|if|else|for|while|switch|try|catch|finally|import|export|const|let|var|yield|return|break|continue|debugger)\b/.test(trimmed) || 
+                                           trimmed.startsWith('{') || 
+                                           trimmed.startsWith('}') || 
+                                           trimmed.endsWith('{');
 
                         try {
-                            // Intentar ejecutar la línea en el contexto actual
-                            // NOTA: Usamos un truco para obtener el valor de la expresión
                             const result = eval(code.split('\n').slice(0, lineNum).join('\n'));
-                            if (result !== undefined && !lineResults[lineNum]) {
+                            
+                            // Solo mostrar si: 
+                            // 1. No es una línea estructural (declaraciones, bucles, etc)
+                            // 2. El resultado no es undefined
+                            if (result !== undefined && !isStructure && !lineResults[lineNum]) {
                                 const formatted = formatValue(result);
                                 lineResults[lineNum] = {
                                     value: formatted.text,
@@ -338,11 +342,20 @@ Math.PI;`;
                     // Fusionar logs de console
                     capturedLogs.forEach(log => {
                         const formatted = formatArgs(log.args);
-                        lineResults[log.line] = { 
-                            value: formatted, 
-                            type: log.type,
-                            rawType: log.args.length === 1 ? typeof log.args[0] : 'mixed'
-                        };
+                        if (!lineResults[log.line]) {
+                            lineResults[log.line] = { 
+                                value: [formatted], 
+                                type: log.type,
+                                rawType: log.args.length === 1 ? typeof log.args[0] : 'mixed'
+                            };
+                        } else {
+                            if (Array.isArray(lineResults[log.line].value)) {
+                                lineResults[log.line].value.push(formatted);
+                            } else {
+                                // Convertir resultado de expresión previo a array concatenado con logs
+                                lineResults[log.line].value = [lineResults[log.line].value, formatted];
+                            }
+                        }
                     });
 
                 } catch (e) {
@@ -372,18 +385,25 @@ Math.PI;`;
                     const result = results[lineNum];
                     
                     if (!result) {
-                        return <div key={lineNum} className="result-line"></div>;
+                        return <div key={lineNum} id={`result-line-${lineNum}`} className="result-line"></div>;
                     }
 
-                    // Solo errores y warnings tienen colores diferentes
-                    let className = 'result-value';
-                    if (result.type === 'error') className = 'result-error';
-                    else if (result.type === 'warn') className = 'result-warn';
-                    else if (result.rawType === 'null') className = 'result-null';
+                    const values = Array.isArray(result.value) ? result.value : [result.value];
 
                     return (
-                        <div key={lineNum} className="result-line">
-                            <span className={className}>{result.value}</span>
+                        <div key={lineNum} id={`result-line-${lineNum}`} className="result-line">
+                            {values.map((v, i) => {
+                                let className = 'result-value';
+                                if (result.type === 'error') className = 'result-error';
+                                else if (result.type === 'warn') className = 'result-warn';
+                                else if (result.rawType === 'null') className = 'result-null';
+                                
+                                return (
+                                    <div key={i} className="flex items-center min-h-[24px]">
+                                        <span className={className}>{v}</span>
+                                    </div>
+                                );
+                            })}
                         </div>
                     );
                 });
